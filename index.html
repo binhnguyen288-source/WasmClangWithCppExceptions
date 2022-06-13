@@ -26,13 +26,19 @@
 		<!-- OR ANY OTHER AMD LOADER HERE INSTEAD OF loader.js -->
         <script src="dist/import.js"></script>
         <script src="dist/main.js"></script>
-		<script src="monaco-editor-0.33.0/package/min/vs/loader.js"></script>
+		<script src="dist/monaco-editor-0.33.0/package/min/vs/loader.js"></script>
 		<script>
             const initValue = 
 `#include <iostream>
+#include <exception>
 
 int main() {
-    std::cout << "hello world\\n";
+    try {
+        throw std::runtime_error("Oops successfully!");
+    }
+    catch (std::exception const& e) {
+        std::cout << e.what() << std::endl;
+    }
     return 0;
 }`
 
@@ -42,7 +48,7 @@ int main() {
                 resolve();
             })
             let editor;
-			require.config({ paths: { vs: 'monaco-editor-0.33.0/package/min/vs' } });
+			require.config({ paths: { vs: 'dist/monaco-editor-0.33.0/package/min/vs' } });
 
 			require(['vs/editor/editor.main'], function () {
 				editor = monaco.editor.create(document.getElementById('codeview'), {
