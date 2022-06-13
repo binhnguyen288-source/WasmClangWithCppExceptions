@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+    <body>
+
+        <style>
+            #consoleout {
+                background-color: black;
+                color: white;
+                font-family: 'Courier New', Courier, monospace;
+                overflow-y: scroll;
+            }
+        </style>
+        <div style="display: flex; width: 90vw; height: 90vh; flex-direction: column; align-items: center; margin: auto;">
+            <div style="width: 100%; height: 100%; display: flex; flex-direction: row; align-items: center; column-gap: 4pt;">
+
+                <div id="codeview" style="width: 100%; height: 100%; border: 1px solid grey;"></div>
+                <p id="consoleout" style="width: 100%; height: 100%; padding: 0; border: 1px solid grey;"></p>
+            
+            </div>
+            <div style="width: 100%; display: flex; flex-direction: row; align-items: center; column-gap: 4pt;">
+                <button onclick="compileRun()">Compile and Run</button>
+                <p id="status"></p>
+            </div>
+        </div>
+
+		<!-- OR ANY OTHER AMD LOADER HERE INSTEAD OF loader.js -->
+        <script src="dist/import.js"></script>
+        <script src="dist/main.js"></script>
+		<script src="monaco-editor-0.33.0/package/min/vs/loader.js"></script>
+		<script>
+            const initValue = 
+`#include <iostream>
+
+int main() {
+    std::cout << "hello world\\n";
+    return 0;
+}`
+
+            let compiler;
+            let compilerLoading = new Promise(async resolve => {
+                compiler = await Compiler();
+                resolve();
+            })
+            let editor;
+			require.config({ paths: { vs: 'monaco-editor-0.33.0/package/min/vs' } });
+
+			require(['vs/editor/editor.main'], function () {
+				editor = monaco.editor.create(document.getElementById('codeview'), {
+					value: initValue,
+					language: 'cpp',
+                    automaticLayout: true,
+                    theme: "vs"
+				});
+			});
+
+            async function compileRun() {
+
+                document.getElementById("status").innerText = 'Compiling';
+                document.getElementById("consoleout").innerText = '';
+                await updateUI();
+                await compilerLoading;
+                compiler.FS.writeFile("source.cpp", editor.getValue(), { encoding: "utf8" });
+                compiler._compileLink();
+                
+                document.getElementById("status").innerText = 'Running';
+                await updateUI();
+                await load_wasm(compiler.FS.readFile("output.wasm", { encoding: "binary" }));
+                document.getElementById("status").innerText = 'Done';
+            }
+		</script>
+    </body>
+
+</html>
