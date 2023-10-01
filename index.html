@@ -261,50 +261,50 @@ void dump_result() {
     }
 
     for (int i = 0; i <= max_depth; ++i) {
-        printf("reg pipeline_d%i_valid = 1'b0;\n", i);
+        printf("reg pipeline_d%i_valid = 1'b0;\\n", i);
     }
     
-    printf("wire pipeline_d%i_forward = ~pipeline_d%i_valid | out_ready;\n", max_depth, max_depth);
+    printf("wire pipeline_d%i_forward = ~pipeline_d%i_valid | out_ready;\\n", max_depth, max_depth);
     for (int i = max_depth - 1; i >= 0; --i) {
-        printf("wire pipeline_d%i_forward = ~pipeline_d%i_valid | pipeline_d%i_forward;\n", i, i, i + 1);
+        printf("wire pipeline_d%i_forward = ~pipeline_d%i_valid | pipeline_d%i_forward;\\n", i, i, i + 1);
     }
 
-    printf("always @(posedge clk)\n"
-                "   if (!rst_n)\n"
-                "       pipeline_d%i_valid <= 1'b0;\n"
-                "   else if (pipeline_d%i_forward)\n"
-                "       pipeline_d%i_valid <= in_valid;\n"
-                "\n", 0, 0, 0);
+    printf("always @(posedge clk)\\n"
+                "   if (!rst_n)\\n"
+                "       pipeline_d%i_valid <= 1'b0;\\n"
+                "   else if (pipeline_d%i_forward)\\n"
+                "       pipeline_d%i_valid <= in_valid;\\n"
+                "\\n", 0, 0, 0);
 
     for (int i = 1; i <= max_depth; ++i) {
-        printf("always @(posedge clk)\n"
-                "   if (!rst_n)\n"
-                "       pipeline_d%i_valid <= 1'b0;\n"
-                "   else if (pipeline_d%i_forward)\n"
-                "       pipeline_d%i_valid <= pipeline_d%i_valid;\n"
-                "\n", i, i, i, i - 1);
+        printf("always @(posedge clk)\\n"
+                "   if (!rst_n)\\n"
+                "       pipeline_d%i_valid <= 1'b0;\\n"
+                "   else if (pipeline_d%i_forward)\\n"
+                "       pipeline_d%i_valid <= pipeline_d%i_valid;\\n"
+                "\\n", i, i, i, i - 1);
     }
 
     for (int i = 0; i <= max_depth; ++i) {
-        printf("always @(posedge clk)\n"
-                "   if (pipeline_d%i_forward) begin\n", i);
+        printf("always @(posedge clk)\\n"
+                "   if (pipeline_d%i_forward) begin\\n", i);
         
          for (auto& v : name2expr) {
 
             if (v.depth == i && !v.is_wire) {
-                printf("        %s <= %s;\n", v.name.c_str(), v.expr.c_str());
+                printf("        %s <= %s;\\n", v.name.c_str(), v.expr.c_str());
             }
         }
 
-        printf("    end\n");
+        printf("    end\\n");
     }
     printf(
-        "assign out_valid = pipeline_d%i_valid;\n"
-        "assign in_ready  = pipeline_d0_forward;\n", max_depth);
+        "assign out_valid = pipeline_d%i_valid;\\n"
+        "assign in_ready  = pipeline_d0_forward;\\n", max_depth);
     
     for (auto& v : outExpr) {
         assert(v.second.first == max_depth);
-        printf("assign %s = %s;\n", v.first.c_str(), v.second.second.c_str());
+        printf("assign %s = %s;\\n", v.first.c_str(), v.second.second.c_str());
     }
 }
 
