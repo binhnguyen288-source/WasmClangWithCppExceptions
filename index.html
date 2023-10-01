@@ -30,38 +30,374 @@
 		<script>
             const initValue = 
 `#include <iostream>
-#include <exception>
-#include <chrono>
-#include <wasi/api.h>
-#include <random>
+#include <string>
+#include <cassert>
+#include <unordered_map>
+#include <vector>
+#include <type_traits>
+#include <cstdarg>
 
-// this is for rng
-extern "C" int getentropy(void* buffer, size_t length) {
-    return __wasi_random_get(static_cast<uint8_t*>(buffer), length);
+struct Prop {
+    std::string name;
+    std::string expr;
+    int depth;
+    int is_wire;
+    std::string msb;
+    int sign;
+
+    std::string toString() const {
+        std::string ret = is_wire ? "wire " : "reg ";
+        if (sign) ret += "signed ";
+        ret += "[" + msb + ":0] " + name;
+        if (!is_wire) {
+            ret += "; // expr <= " + expr + ", depth = " + std::to_string(depth);
+        }
+        else {
+            ret += " = " + expr + "; // depth = " + std::to_string(depth);
+        }
+        return ret;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, Prop const& x) {
+        return os << x.toString();
+    }
+};
+
+std::vector<Prop> name2expr;
+static int count_wire = 0;
+static int count_reg = 0;
+static std::unordered_map<std::string, std::pair<int, std::string>> outExpr;
+
+template<typename T>
+static std::string get_size(T x);
+
+template<>
+std::string get_size(const char* x) {
+    return std::string(x) + "-1";
 }
 
-int fib(int n) {
-    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+template<>
+std::string get_size(int x) {
+    return std::to_string(x - 1);
+}
+
+
+struct Expr {
+    std::string val;
+    int depth;
+    std::string size;
+
+    static void reset() {
+        count_wire = count_reg = 0;
+        name2expr.clear();
+        outExpr.clear();
+    }
+
+    
+    template<int is_signed = 0, typename T>
+    static Expr create_input(T size, std::string name) {
+        return create_wire<is_signed>(size, Expr(name, -1, ""));
+    }
+    
+    template<int is_signed = 0, typename T>
+    static Expr match_depth(T size, Expr v, Expr target) {
+        assert(v.depth_lte(target));
+        while (!v.depth_equal(target))
+            v = Expr::create_reg<is_signed>(size, v);
+        return v;
+    }
+    
+
+
+    static void create_output(std::string name, Expr x) {
+        outExpr[name] = std::make_pair(x.depth, x.val);
+    }
+    
+    template<int is_signed = 0, typename T>
+    static Expr create_reg(T size, Expr x) {
+        std::string name = "r_" + std::to_string(count_reg++);
+        std::string exprSize = get_size(size);
+        name2expr.push_back(Prop{name, x.val, x.depth + 1, 0, exprSize, is_signed});
+        Expr ret(name, x.depth + 1, exprSize);
+        return ret;
+    }
+    
+    template<int is_signed = 0, typename T>
+    static Expr create_wire(T size, Expr x) {
+        std::string name = "w_" + std::to_string(count_wire++);
+        std::string exprSize = get_size(size);
+        name2expr.push_back(Prop{name, x.val, x.depth, 1, exprSize, is_signed});
+        Expr ret(name, x.depth, exprSize);
+        return ret;
+    }
+
+    
+    template<typename T>
+    static Expr create_signed_input(T size, std::string name) {
+        return create_input<1>(size, name);
+    }
+    
+    template<typename T>
+    static Expr signed_match_depth(T size, Expr v, Expr target) {
+        return match_depth<1>(size, v, target);
+    }
+
+    template<typename T>
+    static Expr create_signed_reg(T size, Expr x) {
+        return create_reg<1>(size, x);
+    }
+
+    template<typename T>
+    static Expr create_signed_wire(T size, Expr x) {
+        return create_wire<1>(size, x);
+    }
+
+
+    Expr(std::string val, int depth, std::string size) : val{std::move(val)}, depth{depth}, size{std::move(size)} {}
+
+    Expr(int c) : val{std::to_string(c)}, depth{-2}, size{"32"} {}
+    Expr(const char* x) : val{x}, depth{-2}, size{""} {}
+
+    bool depth_equal(Expr const& other) const {
+        return depth == other.depth || depth == -2 || other.depth == -2;
+    }
+
+    bool depth_lte(Expr const& other) const {
+        return depth <= other.depth || depth == -2 || other.depth == -2;
+    }
+
+    Expr operator+(Expr const& other) const {
+        assert(this->depth_equal(other));
+        return {"(" + val + "+" + other.val + ")", depth, ""};
+    }
+
+    Expr operator-(Expr const& other) const {
+        assert(this->depth_equal(other));
+        return {"(" + val + "-" + other.val + ")", depth, ""};
+    }
+
+    Expr operator*(Expr const& other) const {
+        assert(this->depth_equal(other));
+        return {"(" + val + "*" + other.val + ")", depth, ""};
+    }
+
+    Expr operator<<(Expr const& other) {
+        assert(this->depth_equal(other));
+        return {"(" + val + "<<" + other.val + ")", depth, ""};
+    }
+
+    Expr operator>>(Expr const& other) {
+        assert(this->depth_equal(other));
+        return {"(" + val + ">>" + other.val + ")", depth, ""};
+    }
+
+    Expr operator()(int upper, int lower) {
+        assert(upper >= lower);
+        return {val + "[" + std::to_string(upper) + ":" + std::to_string(lower) + "]", depth, ""};
+    }
+
+   
+   
+    friend std::ostream& operator<<(std::ostream& stream, Expr const& v) {
+        return stream << v.val;
+    }
+
+    static Expr concat_sub(Expr const& first) {
+        return first;
+    }
+
+    template<typename... Args>
+    static Expr concat_sub(Expr const& first, Args... args) {
+        return Expr(first.val + "," + concat_sub(args...).val, first.depth, "");
+    }
+
+    template<typename... Args>
+    static Expr concat(Expr const& first, Args... args) {
+        return Expr("{" + concat_sub(first, args...).val + "}", first.depth, "");
+    }
+
+    
+
+};
+
+
+// static int reg_counter = 0;
+// struct Register {
+//     int length;
+//     int depth;
+//     std::string name;
+//     Expr expression;
+//     Register(int length, std::string prefix = "reg") : name{prefix + std::to_string(reg_counter++)}, expression{name} {
+
+//         this->depth = 0;
+//         this->length = length;
+//     }
+
+//     Expr bit_select(int upper, int lower) {
+//         return name + "[" + std::to_string(upper) + ":" + std::to_string(lower) + "]";
+//     }
+// };
+
+
+
+void dump_result() {
+    
+    int max_depth = 0;
+
+    for (auto& v : name2expr) {
+        max_depth = std::max(max_depth, v.depth);
+    }
+
+    for (auto& v : name2expr) {
+        if (!v.is_wire) {
+            std::cout << v.toString() << std::endl;
+        }
+    }
+
+    for (auto& v : name2expr) {
+        if (v.is_wire) {
+            std::cout << v.toString() << std::endl;
+        }
+    }
+
+    for (int i = 0; i <= max_depth; ++i) {
+        printf("reg pipeline_d%i_valid = 1'b0;\n", i);
+    }
+    
+    printf("wire pipeline_d%i_forward = ~pipeline_d%i_valid | out_ready;\n", max_depth, max_depth);
+    for (int i = max_depth - 1; i >= 0; --i) {
+        printf("wire pipeline_d%i_forward = ~pipeline_d%i_valid | pipeline_d%i_forward;\n", i, i, i + 1);
+    }
+
+    printf("always @(posedge clk)\n"
+                "   if (!rst_n)\n"
+                "       pipeline_d%i_valid <= 1'b0;\n"
+                "   else if (pipeline_d%i_forward)\n"
+                "       pipeline_d%i_valid <= in_valid;\n"
+                "\n", 0, 0, 0);
+
+    for (int i = 1; i <= max_depth; ++i) {
+        printf("always @(posedge clk)\n"
+                "   if (!rst_n)\n"
+                "       pipeline_d%i_valid <= 1'b0;\n"
+                "   else if (pipeline_d%i_forward)\n"
+                "       pipeline_d%i_valid <= pipeline_d%i_valid;\n"
+                "\n", i, i, i, i - 1);
+    }
+
+    for (int i = 0; i <= max_depth; ++i) {
+        printf("always @(posedge clk)\n"
+                "   if (pipeline_d%i_forward) begin\n", i);
+        
+         for (auto& v : name2expr) {
+
+            if (v.depth == i && !v.is_wire) {
+                printf("        %s <= %s;\n", v.name.c_str(), v.expr.c_str());
+            }
+        }
+
+        printf("    end\n");
+    }
+    printf(
+        "assign out_valid = pipeline_d%i_valid;\n"
+        "assign in_ready  = pipeline_d0_forward;\n", max_depth);
+    
+    for (auto& v : outExpr) {
+        assert(v.second.first == max_depth);
+        printf("assign %s = %s;\n", v.first.c_str(), v.second.second.c_str());
+    }
+}
+
+
+#define KYBER_Q 3329
+Expr montgomery_reduce(Expr P) {
+
+    
+    auto v  = Expr::create_wire(16, P(15, 0));
+    auto v8 = Expr::create_wire(16, Expr::concat(P(7, 0), "8'd0"));
+    auto v9 = Expr::create_wire(16, Expr::concat(P(6, 0), "9'd0"));
+    auto v12 = Expr::create_wire(16, Expr::concat(P(3, 0), "12'd0"));
+
+    auto t = Expr::create_signed_wire(16, v + v8 + v9 - v12);
+    auto t_3329P = Expr::create_signed_reg(32, t + (t << 8) + (t << 10) + (t << 11));
+    auto fullP = Expr::create_signed_wire(32, Expr::signed_match_depth(28, P, t_3329P) - t_3329P);
+
+    return Expr::create_wire(16, fullP(31, 16));
+}
+
+Expr barret_reduce(Expr a) {
+    const int v = ((1<<26) + KYBER_Q/2)/KYBER_Q;
+    auto av = Expr::create_signed_reg(32, a * v);
+    auto t1 = Expr::create_signed_reg(32, av + (1 << 25));
+    auto t2 = Expr::create_signed_wire(6, t1(31, 26));
+    auto t3 = Expr::create_signed_wire(16, t2 + (t2 << 8) + (t2 << 10) + (t2 << 11));
+    return Expr::create_signed_reg(16, Expr::signed_match_depth(16, a, t3) - t3);
+}
+
+
+void ntt_forward_butterfly() {
+
+    Expr::reset();
+
+    auto x_latch = Expr::create_signed_input(16, "x_in");
+    auto y_latch = Expr::create_signed_input(16, "y_in");
+    auto zeta_latch = Expr::create_signed_input(12, "zeta_in");
+    auto payload_latch = Expr::create_input("PAYLOAD_WIDTH", "payload_in");
+
+    auto P = Expr::create_signed_reg(28, y_latch * zeta_latch);
+    P = Expr::create_signed_reg(28, P);
+    auto y_zeta_reduced_P = montgomery_reduce(P);
+
+    auto xP         = Expr::signed_match_depth(16, x_latch, y_zeta_reduced_P);
+    auto payloadP   = Expr::match_depth("PAYLOAD_WIDTH", payload_latch, y_zeta_reduced_P);
+
+    auto xO = Expr::create_reg(16, xP + y_zeta_reduced_P);
+    auto yO = Expr::create_reg(16, xP - y_zeta_reduced_P);
+    auto payloadO = Expr::create_reg("PAYLOAD_WIDTH", payloadP);
+
+    Expr::create_output("x_out", xO);
+    Expr::create_output("y_out", yO);
+    Expr::create_output("payload_out", payloadO);
+
+    dump_result();
+}
+
+void ntt_inverse_butterfly() {
+
+    Expr::reset();
+
+    auto x_latch = Expr::create_signed_input(16, "x_in");
+    auto y_latch = Expr::create_signed_input(16, "y_in");
+    auto zeta_latch = Expr::create_signed_input(12, "zeta_in");
+    auto payload_latch = Expr::create_input("PAYLOAD_WIDTH", "payload_in");
+
+    auto diff_yx = Expr::create_signed_reg(16, y_latch - x_latch);
+    auto sum_yx  = Expr::create_signed_reg(16, y_latch + x_latch);
+
+    auto xO = barret_reduce(sum_yx);
+
+    auto mP = Expr::create_signed_reg(28, diff_yx * Expr::signed_match_depth(12, zeta_latch, diff_yx));
+
+    auto yO = montgomery_reduce(Expr::create_signed_reg(28, mP));
+    assert(xO.depth == yO.depth);
+    auto payloadO = Expr::match_depth("PAYLOAD_WIDTH", payload_latch, xO);
+
+    Expr::create_output("x_out", xO);
+    Expr::create_output("y_out", yO);
+    Expr::create_output("payload_out", payloadO);
+
+
+
+    dump_result();
 }
 
 int main() {
-    try {
-        throw std::runtime_error("Oops successfully!");
-    }
-    catch (std::exception const& e) {
-        std::cout << e.what() << std::endl;
-    }
 
-    std::cout << "A random number: " << (std::random_device())() << std::endl;
+    // ntt_forward_butterfly();
 
-    using namespace std::chrono;
-    auto s = steady_clock::now();
-    for (int i = 0; i < 35; ++i) {
-        std::cout << fib(i) << '\\n';
-    }
-    auto e = steady_clock::now();
 
-    std::cout << "Fib from 1 to 35 runs in: " << duration<double>(e - s).count() << 's';
+    ntt_forward_butterfly();
+
     return 0;
 }`
 
